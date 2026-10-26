@@ -209,5 +209,147 @@ printf '\n--- Mount points ---\n'
 findmnt "${RAID_MOUNT}"
 findmnt "${LVM_MOUNT}"
 
-log "Готово: известные этапы Docker, RAID 1 и LVM выполнены."
-log "nginx, TLS и systemd для приложения будут добавлены после сверки со второй частью задания."
+
+# --------------------------------------------------
+# Шаг 9: подготовка второй части проекта
+# Docker, Nginx, HTTPS и systemd
+# --------------------------------------------------
+
+log "Шаг 9: настройка Docker-приложения, Nginx и HTTPS"
+
+# Проверяем наличие файлов приложения
+if [[ ! -f Dockerfile ]]; then
+    echo "ОШИБКА: Dockerfile не найден в каталоге проекта." >&2
+    exit 1
+fi
+
+if [[ ! -f script.sh ]]; then
+    echo "ОШИБКА: script.sh не найден в каталоге проекта." >&2
+    exit 1
+fi
+
+# Устанавливаем Docker, если он ещё не установлен
+if ! command -v docker >/dev/null 2>&1; then
+    log "Установка Docker..."
+    apt-get update
+    apt-get install -y docker.io
+fi
+
+systemctl enable --now docker
+
+# Собираем образ приложения
+log "Сборка Docker-образа my-script..."
+docker build -t my-script .
+
+# Устанавливаем Nginx, если его ещё нет
+if ! command -v nginx >/dev/null 2>&1; then
+    log "Установка Nginx..."
+    apt-get update
+    apt-get install -y nginx
+fi
+
+# Создаём TLS-сертификат, только если его ещё нет
+if [[ ! -s /etc/ssl/certs/my-app.crt ||
+      ! -s /etc/ssl/private/my-app.key ]]; then
+    log "Создание самоподписанного TLS-сертификата..."
+
+    install -d -m 700 /etc/ssl/private
+
+    openssl req -x509 -nodes -days 365 \
+        -newkey rsa:2048 \
+        -keyout /etc/ssl/private/my-app.key \
+        -out /etc/ssl/certs/my-app.crt \
+        -subj "/CN=my-app.local"
+
+    chmod 600 /etc/ssl/private/my-app.key
+fi
+
+# Настраиваем Nginx как обратный прокси
+log "Настройка Nginx..."
+
+cat > /etc/nginx/sites-available/my-app <<'NGINX'
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name _;
+
+    ssl_certificate /etc/ssl/certs/my-app.crt;
+    ssl_certificate_key /etc/ssl/private/my-app.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+NGINX
+
+ln -sfn /etc/nginx/sites-available/my-app \
+    /etc/nginx/sites-enabled/my-app
+
+rm -f /etc/nginx/sites-enabled/default
+
+nginx -t
+systemctl enable nginx
+systemctl restart nginx
+
+# Создаём службу systemd для контейнера
+log "Создание службы my-app..."
+
+cat > /etc/systemd/system/my-app.service <<'SERVICE'
+[Unit]
+Description=My monitoring application container
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/docker start -a my-app
+ExecStop=/usr/bin/docker stop -t 10 my-app
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+systemctl daemon-reload
+systemctl enable my-app
+
+# Пересоздаём контейнер, если он уже существует.
+# Это удаляет его прежний записываемый слой.
+systemctl stop my-app 2>/dev/null || true
+
+if docker container inspect my-app >/dev/null 2>&1; then
+    docker rm -f my-app
+fi
+
+docker create \
+    --name my-app \
+    --publish 127.0.0.1:8080:8080 \
+    my-script
+
+systemctl start my-app
+
+# Итоговая проверка второй части
+log "Проверка службы my-app..."
+systemctl --no-pager --full status my-app
+
+log "Проверка HTTPS..."
+if curl -kfsSI https://127.0.0.1/; then
+    log "HTTPS работает."
+else
+    log "ОШИБКА: проверка HTTPS не пройдена."
+    log "Проверь журналы: journalctl -u my-app -n 50 --no-pager"
+    exit 1
+fi
+
+log "Готово: этапы Docker, RAID 1, LVM, Nginx, HTTPS и systemd выполнены."
+

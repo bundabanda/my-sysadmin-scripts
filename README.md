@@ -12,3 +12,19 @@
 ```bash
 chmod +x script.sh
 ./script.sh
+
+Часть 2: Nginx, HTTPS и systemd
+
+Контейнер `my-app` запускает HTTP-сервер на порту 8080.
+Nginx перенаправляет HTTP на HTTPS.
+
+Используется самоподписанный сертификат.
+
+Проверка
+
+```bash
+sudo nginx -t
+curl -kI https://127.0.0.1/
+sudo systemctl status my-app --no-pager
+sudo journalctl -u my-app -n 50 --no-pager
+sudo tail -n 30 /var/log/nginx/access.log

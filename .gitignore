@@ -4,3 +4,4 @@ report.txt
 *.pem
 *.key
 .env
+*.img
