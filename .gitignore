@@ -1,0 +1,6 @@
+monitor.log
+setup.log
+report.txt
+*.pem
+*.key
+.env
